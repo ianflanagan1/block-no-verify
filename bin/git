@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# A git wrapper, first on the PATH of the commands Claude runs (scripts/session-path.sh puts it
+# there). It refuses a git command that skips git's hooks, as scripts/skips-hooks.sh decides, then
+# runs the next git on PATH. It catches git run from a script or a program, which the PreToolUse
+# hook only sees the name of.
+
+# Only bash's builtins run before the real git, so the wrapper works on any PATH.
+self=${BASH_SOURCE[0]}
+here=$(cd "${self%/*}" && pwd)
+# shellcheck source=scripts/skips-hooks.sh
+if ! . "$here/../scripts/skips-hooks.sh"; then
+    echo "git (block-no-verify): can't load $here/../scripts/skips-hooks.sh" >&2
+    exit 1
+fi
+
+refuse() {
+    echo "git (block-no-verify): refused, because $1 skips git's hooks. Don't skip them: fix what the hook reports, or if the hook is wrong, ask the user." >&2
+    exit 1
+}
+
+if reason=$(git_skips_hooks "$@"); then
+    refuse "$reason"
+fi
+config_keys=()
+for name in "${!GIT_CONFIG_KEY_@}"; do
+    config_keys+=("${!name}")
+done
+if reason=$(env_skips_hooks "${HUSKY:-}" "${GIT_CONFIG_PARAMETERS:-}" "${config_keys[@]}"); then
+    refuse "$reason"
+fi
+
+# The next git on PATH that isn't this one.
+IFS=: read -r -a dirs <<<"$PATH"
+for dir in "${dirs[@]}"; do
+    candidate=${dir:-.}/git
+    if [ -x "$candidate" ] && ! [ "$candidate" -ef "$self" ]; then
+        exec "$candidate" "$@"
+    fi
+done
+echo "git (block-no-verify): no git found on PATH after this wrapper" >&2
+exit 127
